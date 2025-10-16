@@ -1,0 +1,24 @@
+name: Sync n8n Workflows to Render
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'n8n-workflows/**'
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Trigger n8n workflow sync via API
+        run: |
+          curl -X POST \
+            "${{ secrets.N8N_URL }}/api/v1/source-control/pull" \
+            -H "Content-Type: application/json" \
+            -H "X-N8N-API-KEY: ${{ secrets.N8N_API_KEY }}" \
+            -d '{"force": true}'
