@@ -1,10 +1,33 @@
-Flask==2.1.1
-gunicorn==20.1.0
-Werkzeug==2.1.1
+# Web framework
+fastapi==0.95.2
+uvicorn[standard]==0.22.0
+
+# Core tools
+pytrends==4.8.0
+schedule==1.2.0
+pandas==2.0.3
+requests==2.31.0
+python-dotenv==1.0.0
+tiktoken==0.5.2
+apscheduler==3.9.1
+
+# Flask tools (if you still need them, otherwise remove)
 flask-cors==3.0.10
 flask-caching==1.11.1
-apscheduler==3.9.1
-pytrends==4.8.0
-tiktoken==0.3.3
-fastapi
-uvicorn
+gunicorn==20.1.0
+Werkzeug==2.1.1
+
+# LangChain ecosystem (compatible versions)
+langchain==0.1.14
+langchain-core==0.1.51
+langchain-community==0.0.31
+langchain-openai==0.1.1
+
+# Pydantic version compatible with FastAPI 0.95.2
+pydantic==1.10.12
+
+# OpenAI client (compatible with langchain-openai)
+openai==1.10.0
+
+# Optional: Google APIs
+google-api-python-client==2.99.0
