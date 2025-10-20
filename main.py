@@ -1,5 +1,5 @@
 import logging
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -25,6 +25,8 @@ logging.basicConfig(level=logging.INFO)
 # Cache with TTL of 24 hours
 cache = TTLCache(maxsize=1, ttl=86400)
 CACHE_KEY = "trends_data"
+
+API_KEY = "supersecretkey"  # << Your API Key here
 
 def fetch_trends():
     logging.info("Starting fetch_trends function.")
@@ -85,13 +87,17 @@ async def aggregate_trends_endpoint(q: str = "Python"):
     return {"query": keywords, "results": results}
 
 @app.post("/score-trend")
-async def score_trend_endpoint(request: TrendRequest):
-    if not request.topic or not request.topic.strip():
+async def score_trend_endpoint(request: Request, trend_request: TrendRequest):
+    auth_header = request.headers.get("Authorization")
+    if auth_header != f"Bearer {API_KEY}":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    if not trend_request.topic or not trend_request.topic.strip():
         raise HTTPException(status_code=400, detail="Topic is required")
     # Dummy scoring logic
     result = {"score": 42}
     return {
-        "topic": request.topic,
+        "topic": trend_request.topic,
         "scores": result
     }
 
