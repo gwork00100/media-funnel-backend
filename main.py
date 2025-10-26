@@ -37,7 +37,7 @@ CACHE_KEY = "trends_data"
 API_KEY = os.getenv("API_KEY")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-CUSTOM_SEARCH_ENGINE_ID = os.getenv("GOOGLE_CSE_ID")
+CUSTOM_SEARCH_ENGINE_ID = os.getenv("CUSTOM_SEARCH_ENGINE_ID")  # ✅ fixed line
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
