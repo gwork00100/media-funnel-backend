@@ -1,3 +1,4 @@
+from dotenv import load_dotenv
 import os
 import logging
 from fastapi import FastAPI, Request, HTTPException, Body, Query
@@ -10,206 +11,145 @@ import httpx
 from pydantic import BaseModel
 from supabase import create_client, Client
 
-# Initialize FastAPI app
-app = FastAPI()
+# Load environment variables
+load_dotenv()
 
-# CORS setup — adjust origin as needed
+# Logging
+logging.basicConfig(level=logging.INFO)
+
+# Initialize FastAPI app
+app = FastAPI(title="Google Trends + Supabase API")
+
+# CORS setup
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://gwork00100.github.io"],  # Change to your frontend URL
+    allow_origins=["https://gwork00100.github.io"],  # frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-
-# Cache setup: max 1 item, TTL 24 hours
+# Cache setup (24 hours)
 cache = TTLCache(maxsize=1, ttl=86400)
 CACHE_KEY = "trends_data"
 
-# API Keys and URLs from env or defaults
-API_KEY = os.getenv("API_KEY", "supersecretkey")
+# Environment variables
+API_KEY = os.getenv("API_KEY")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+CUSTOM_SEARCH_ENGINE_ID = os.getenv("GOOGLE_CSE_ID")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-# Your Google Custom Search keys (replace with your real keys or env vars)
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "AIzaSyDz7HXgh4t8C-7Tw_DH1d6zaMe3LlZdwxY")
-CUSTOM_SEARCH_ENGINE_ID = os.getenv("CUSTOM_SEARCH_ENGINE_ID", "30898967c7dd54c74")
+# Validation
+required_env = {
+    "SUPABASE_URL": SUPABASE_URL,
+    "SUPABASE_KEY": SUPABASE_KEY,
+    "GOOGLE_API_KEY": GOOGLE_API_KEY,
+    "CUSTOM_SEARCH_ENGINE_ID": CUSTOM_SEARCH_ENGINE_ID,
+    "API_KEY": API_KEY,
+}
+missing = [k for k, v in required_env.items() if not v]
+if missing:
+    raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
 
-# Supabase credentials from env
-SUPABASE_URL = os.getenv("SUPABASE_URL", "your-supabase-url")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "your-supabase-key")
-
-# Create Supabase client
+# Supabase client
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Scheduler setup
+# Scheduler
 scheduler = BackgroundScheduler()
 
+# Fetch Google Trends
 def fetch_trends():
-    logging.info("Starting fetch_trends function.")
+    logging.info("Starting fetch_trends job.")
     try:
-        pytrends = TrendReq(hl='en-US', tz=360, retries=3, backoff_factor=0.5, timeout=(10, 25))
-        keywords = ['python']
-        logging.info(f"Building payload for keywords: {keywords}")
-
-        pytrends.build_payload(kw_list=keywords, timeframe='now 7-d', geo='US')
+        pytrends = TrendReq(hl="en-US", tz=360)
+        keywords = ["python"]
+        pytrends.build_payload(kw_list=keywords, timeframe="now 7-d", geo="US")
         df = pytrends.interest_over_time()
 
-        if df is None or df.empty:
-            logging.error("No interest_over_time data received from pytrends")
+        if df.empty:
+            logging.warning("No trend data received.")
             return
 
-        data = df.reset_index().to_dict(orient='records')
+        data = df.reset_index().to_dict(orient="records")
         cache[CACHE_KEY] = data
-        logging.info("Trends interest_over_time data cached successfully.")
+        logging.info("Trends data cached successfully.")
 
-        # Insert trends into Supabase
         for record in data:
-            keyword = 'python'  # since pytrends only returns interest for keyword 'python' here
-            interest = record.get('python', 0)
-            fetched_at = record.get('date') or record.get('index')  # Use 'date' or index datetime
-            if not fetched_at:
-                fetched_at = None
-
             supabase.table("trends").insert({
-                "keyword": keyword,
-                "interest": interest,
-                "fetched_at": fetched_at
+                "keyword": "python",
+                "interest": record.get("python", 0),
+                "fetched_at": record.get("date")
             }).execute()
-
-        logging.info("Inserted trends into Supabase successfully.")
+        logging.info("Trends inserted into Supabase successfully.")
 
     except Exception as e:
-        logging.error(f"Exception in fetch_trends: {e}")
+        logging.error(f"Error in fetch_trends: {e}")
 
-# Schedule the job every 3 hours
+# Schedule every 3 hours
 scheduler.add_job(fetch_trends, IntervalTrigger(hours=3))
 scheduler.start()
 
-# Pydantic model for /score-trend POST body
+# Models
 class TrendRequest(BaseModel):
     topic: str
 
-# --- Existing API endpoints ---
-
+# Routes
 @app.get("/")
 def home():
-    return {"message": "Welcome to Google Trends API (FastAPI version)"}
+    return {"message": "Google Trends API running successfully"}
 
 @app.get("/daily-trends")
 def daily_trends():
     try:
         result = supabase.table("trends").select("*").order("fetched_at", desc=True).limit(10).execute()
-        data = result.data
-        if not data:
-            return {"error": "No trends data available yet."}
-        return {"trends": data}
+        return {"trends": result.data or []}
     except Exception as e:
-        logging.error(f"Error fetching trends from Supabase: {e}")
-        return {"error": "Failed to fetch trends from database."}
+        logging.error(e)
+        raise HTTPException(status_code=500, detail="Failed to fetch trends.")
 
 @app.get("/refresh-trends")
 def refresh_trends():
-    logging.info(">>> /refresh-trends called")
-    fetch_trends()  # Run synchronously on demand
-    logging.info(">>> fetch_trends finished")
-    return {"message": "Trends refresh executed synchronously"}
-
-@app.get("/aggregate-trends")
-async def aggregate_trends_endpoint(q: str = "Python"):
-    keywords = [k.strip() for k in q.split(",")] if "," in q else [q]
-    # Dummy aggregator response
-    results = {"dummy": "aggregated data for " + ", ".join(keywords)}
-    return {"query": keywords, "results": results}
+    fetch_trends()
+    return {"message": "Trends refreshed manually"}
 
 @app.post("/score-trend")
-async def score_trend_endpoint(request: Request, trend_request: TrendRequest):
-    auth_header = request.headers.get("Authorization")
-    if auth_header != f"Bearer {API_KEY}":
+async def score_trend(request: Request, trend_request: TrendRequest):
+    if request.headers.get("Authorization") != f"Bearer {API_KEY}":
         raise HTTPException(status_code=401, detail="Unauthorized")
+    return {"topic": trend_request.topic, "score": 42}
 
-    if not trend_request.topic or not trend_request.topic.strip():
-        raise HTTPException(status_code=400, detail="Topic is required")
-
-    # Dummy scoring logic (replace with your real logic)
-    result = {"score": 42}
-    return {
-        "topic": trend_request.topic,
-        "scores": result
-    }
-
-@app.get("/health")
-async def health_check():
-    return {"status": "ok"}
+@app.get("/google-search")
+async def google_search(q: str = Query(..., description="Search query")):
+    url = "https://www.googleapis.com/customsearch/v1"
+    params = {"key": GOOGLE_API_KEY, "cx": CUSTOM_SEARCH_ENGINE_ID, "q": q}
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(url, params=params, timeout=10.0)
+    if resp.status_code != 200:
+        raise HTTPException(status_code=resp.status_code, detail="Google API error")
+    data = resp.json()
+    items = data.get("items", [])
+    return {"query": q, "results": [{"title": i.get("title"), "link": i.get("link"), "snippet": i.get("snippet")} for i in items]}
 
 @app.post("/chat")
 async def chat(request: Request, body: dict = Body(...)):
-    auth_header = request.headers.get("Authorization")
-    if auth_header != f"Bearer {API_KEY}":
+    if request.headers.get("Authorization") != f"Bearer {API_KEY}":
         raise HTTPException(status_code=401, detail="Unauthorized")
-
     prompt = body.get("prompt")
     if not prompt:
-        raise HTTPException(status_code=400, detail="Prompt is required")
+        raise HTTPException(status_code=400, detail="Prompt required")
 
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                OLLAMA_URL,
-                json={
-                    "model": "llama2",
-                    "prompt": prompt,
-                    "stream": False,
-                },
-                timeout=15.0,
-            )
-        if resp.status_code != 200:
-            logging.error(f"Ollama request failed with status {resp.status_code}: {resp.text}")
-            raise HTTPException(status_code=resp.status_code, detail="Ollama request failed")
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            OLLAMA_URL,
+            json={"model": "llama2", "prompt": prompt, "stream": False},
+            timeout=15.0,
+        )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=resp.status_code, detail="Ollama API error")
+    return resp.json()
 
-        return resp.json()
-
-    except httpx.RequestError as e:
-        logging.error(f"Ollama service unavailable: {str(e)}")
-        raise HTTPException(status_code=503, detail=f"Ollama service unavailable: {str(e)}")
-
-# --- New endpoint: Google Custom Search ---
-
-@app.get("/google-search")
-async def google_search(q: str = Query(..., min_length=1, description="Search query")):
-    """
-    Perform a Google Custom Search using your API key and CX.
-    """
-    url = "https://www.googleapis.com/customsearch/v1"
-    params = {
-        "key": GOOGLE_API_KEY,
-        "cx": CUSTOM_SEARCH_ENGINE_ID,
-        "q": q
-    }
-
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url, params=params, timeout=10.0)
-        response.raise_for_status()
-        results = response.json()
-
-        # Extract relevant data or just return raw results
-        items = results.get("items", [])
-        search_results = []
-        for item in items:
-            search_results.append({
-                "title": item.get("title"),
-                "link": item.get("link"),
-                "snippet": item.get("snippet")
-            })
-
-        return {"query": q, "results": search_results}
-
-    except httpx.HTTPStatusError as e:
-        logging.error(f"Google API error: {e.response.text}")
-        raise HTTPException(status_code=e.response.status_code, detail="Google API error")
-    except Exception as e:
-        logging.error(f"Exception in Google Search: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+@app.get("/health")
+def health():
+    return {"status": "ok"}
