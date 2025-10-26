@@ -1,6 +1,6 @@
 import os
 import logging
-from fastapi import FastAPI, Request, HTTPException, Body
+from fastapi import FastAPI, Request, HTTPException, Body, Query
 from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -8,6 +8,7 @@ from pytrends.request import TrendReq
 from cachetools import TTLCache
 import httpx
 from pydantic import BaseModel
+from supabase import create_client, Client
 
 # Initialize FastAPI app
 app = FastAPI()
@@ -32,6 +33,17 @@ CACHE_KEY = "trends_data"
 API_KEY = os.getenv("API_KEY", "supersecretkey")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 
+# Your Google Custom Search keys (replace with your real keys or env vars)
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "AIzaSyDz7HXgh4t8C-7Tw_DH1d6zaMe3LlZdwxY")
+CUSTOM_SEARCH_ENGINE_ID = os.getenv("CUSTOM_SEARCH_ENGINE_ID", "30898967c7dd54c74")
+
+# Supabase credentials from env
+SUPABASE_URL = os.getenv("SUPABASE_URL", "your-supabase-url")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "your-supabase-key")
+
+# Create Supabase client
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
 # Scheduler setup
 scheduler = BackgroundScheduler()
 
@@ -53,6 +65,22 @@ def fetch_trends():
         cache[CACHE_KEY] = data
         logging.info("Trends interest_over_time data cached successfully.")
 
+        # Insert trends into Supabase
+        for record in data:
+            keyword = 'python'  # since pytrends only returns interest for keyword 'python' here
+            interest = record.get('python', 0)
+            fetched_at = record.get('date') or record.get('index')  # Use 'date' or index datetime
+            if not fetched_at:
+                fetched_at = None
+
+            supabase.table("trends").insert({
+                "keyword": keyword,
+                "interest": interest,
+                "fetched_at": fetched_at
+            }).execute()
+
+        logging.info("Inserted trends into Supabase successfully.")
+
     except Exception as e:
         logging.error(f"Exception in fetch_trends: {e}")
 
@@ -64,7 +92,7 @@ scheduler.start()
 class TrendRequest(BaseModel):
     topic: str
 
-# --- API endpoints ---
+# --- Existing API endpoints ---
 
 @app.get("/")
 def home():
@@ -72,10 +100,15 @@ def home():
 
 @app.get("/daily-trends")
 def daily_trends():
-    data = cache.get(CACHE_KEY)
-    if not data:
-        return {"error": "No trends data available yet."}
-    return data
+    try:
+        result = supabase.table("trends").select("*").order("fetched_at", desc=True).limit(10).execute()
+        data = result.data
+        if not data:
+            return {"error": "No trends data available yet."}
+        return {"trends": data}
+    except Exception as e:
+        logging.error(f"Error fetching trends from Supabase: {e}")
+        return {"error": "Failed to fetch trends from database."}
 
 @app.get("/refresh-trends")
 def refresh_trends():
@@ -113,7 +146,6 @@ async def health_check():
 
 @app.post("/chat")
 async def chat(request: Request, body: dict = Body(...)):
-    # Authorization check
     auth_header = request.headers.get("Authorization")
     if auth_header != f"Bearer {API_KEY}":
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -127,7 +159,7 @@ async def chat(request: Request, body: dict = Body(...)):
             resp = await client.post(
                 OLLAMA_URL,
                 json={
-                    "model": "llama2",  # Use llama2 since mistral is not available
+                    "model": "llama2",
                     "prompt": prompt,
                     "stream": False,
                 },
@@ -142,3 +174,42 @@ async def chat(request: Request, body: dict = Body(...)):
     except httpx.RequestError as e:
         logging.error(f"Ollama service unavailable: {str(e)}")
         raise HTTPException(status_code=503, detail=f"Ollama service unavailable: {str(e)}")
+
+# --- New endpoint: Google Custom Search ---
+
+@app.get("/google-search")
+async def google_search(q: str = Query(..., min_length=1, description="Search query")):
+    """
+    Perform a Google Custom Search using your API key and CX.
+    """
+    url = "https://www.googleapis.com/customsearch/v1"
+    params = {
+        "key": GOOGLE_API_KEY,
+        "cx": CUSTOM_SEARCH_ENGINE_ID,
+        "q": q
+    }
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, params=params, timeout=10.0)
+        response.raise_for_status()
+        results = response.json()
+
+        # Extract relevant data or just return raw results
+        items = results.get("items", [])
+        search_results = []
+        for item in items:
+            search_results.append({
+                "title": item.get("title"),
+                "link": item.get("link"),
+                "snippet": item.get("snippet")
+            })
+
+        return {"query": q, "results": search_results}
+
+    except httpx.HTTPStatusError as e:
+        logging.error(f"Google API error: {e.response.text}")
+        raise HTTPException(status_code=e.response.status_code, detail="Google API error")
+    except Exception as e:
+        logging.error(f"Exception in Google Search: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
