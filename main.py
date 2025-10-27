@@ -1,4 +1,3 @@
-# main.py
 from dotenv import load_dotenv
 import os
 import logging
@@ -18,7 +17,7 @@ load_dotenv()
 # Logging
 logging.basicConfig(level=logging.INFO)
 
-# Initialize FastAPI app
+# FastAPI app
 app = FastAPI(title="Google Trends + Supabase API + Ollama Chat")
 
 # CORS setup
@@ -30,13 +29,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Cache setup (24 hours)
+# Cache
 cache = TTLCache(maxsize=1, ttl=86400)
 CACHE_KEY = "trends_data"
 
 # Environment variables
 API_KEY = os.getenv("API_KEY")
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/v1/chat")
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://127.0.0.1:52683")
+OLLAMA_URL = f"{OLLAMA_HOST}/v1/chat"
+
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 CUSTOM_SEARCH_ENGINE_ID = os.getenv("CUSTOM_SEARCH_ENGINE_ID")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -60,7 +61,6 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # Scheduler
 scheduler = BackgroundScheduler()
 
-# Fetch Google Trends function
 def fetch_trends():
     logging.info("Starting fetch_trends job...")
     try:
@@ -77,7 +77,6 @@ def fetch_trends():
         cache[CACHE_KEY] = data
         logging.info("Trends data cached successfully.")
 
-        # Insert into Supabase
         for record in data:
             supabase.table("trends").insert({
                 "keyword": "python",
@@ -89,15 +88,13 @@ def fetch_trends():
     except Exception as e:
         logging.error(f"Error in fetch_trends: {e}")
 
-# Schedule fetch_trends every 3 hours
+# Schedule every 3 hours
 scheduler.add_job(fetch_trends, IntervalTrigger(hours=3))
 scheduler.start()
 
-# Pydantic model for chat/trend requests
 class TrendRequest(BaseModel):
     topic: str
 
-# Routes
 @app.get("/")
 def home():
     return {"message": "API running successfully"}
@@ -124,7 +121,6 @@ def refresh_trends():
 async def score_trend(request: Request, trend_request: TrendRequest):
     if request.headers.get("Authorization") != f"Bearer {API_KEY}":
         raise HTTPException(status_code=401, detail="Unauthorized")
-    # Placeholder logic for scoring
     return {"topic": trend_request.topic, "score": 42}
 
 @app.get("/google-search")
@@ -153,7 +149,7 @@ async def chat(request: Request, body: dict = Body(...)):
             resp = await client.post(
                 OLLAMA_URL,
                 json={
-                    "model": "llama2",
+                    "model": "llama2:latest",
                     "messages": [{"role": "user", "content": prompt}],
                     "stream": False
                 },
