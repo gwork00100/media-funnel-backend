@@ -1,3 +1,4 @@
+# main.py
 from dotenv import load_dotenv
 import os
 import logging
@@ -18,7 +19,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
 # Initialize FastAPI app
-app = FastAPI(title="Google Trends + Supabase API")
+app = FastAPI(title="Google Trends + Supabase API + Ollama Chat")
 
 # CORS setup
 app.add_middleware(
@@ -35,13 +36,13 @@ CACHE_KEY = "trends_data"
 
 # Environment variables
 API_KEY = os.getenv("API_KEY")
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/v1/chat")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-CUSTOM_SEARCH_ENGINE_ID = os.getenv("CUSTOM_SEARCH_ENGINE_ID")  # ✅ fixed line
+CUSTOM_SEARCH_ENGINE_ID = os.getenv("CUSTOM_SEARCH_ENGINE_ID")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-# Validation
+# Validate required env variables
 required_env = {
     "SUPABASE_URL": SUPABASE_URL,
     "SUPABASE_KEY": SUPABASE_KEY,
@@ -59,9 +60,9 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # Scheduler
 scheduler = BackgroundScheduler()
 
-# Fetch Google Trends
+# Fetch Google Trends function
 def fetch_trends():
-    logging.info("Starting fetch_trends job.")
+    logging.info("Starting fetch_trends job...")
     try:
         pytrends = TrendReq(hl="en-US", tz=360)
         keywords = ["python"]
@@ -76,6 +77,7 @@ def fetch_trends():
         cache[CACHE_KEY] = data
         logging.info("Trends data cached successfully.")
 
+        # Insert into Supabase
         for record in data:
             supabase.table("trends").insert({
                 "keyword": "python",
@@ -87,18 +89,22 @@ def fetch_trends():
     except Exception as e:
         logging.error(f"Error in fetch_trends: {e}")
 
-# Schedule every 3 hours
+# Schedule fetch_trends every 3 hours
 scheduler.add_job(fetch_trends, IntervalTrigger(hours=3))
 scheduler.start()
 
-# Models
+# Pydantic model for chat/trend requests
 class TrendRequest(BaseModel):
     topic: str
 
 # Routes
 @app.get("/")
 def home():
-    return {"message": "Google Trends API running successfully"}
+    return {"message": "API running successfully"}
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 @app.get("/daily-trends")
 def daily_trends():
@@ -118,6 +124,7 @@ def refresh_trends():
 async def score_trend(request: Request, trend_request: TrendRequest):
     if request.headers.get("Authorization") != f"Bearer {API_KEY}":
         raise HTTPException(status_code=401, detail="Unauthorized")
+    # Placeholder logic for scoring
     return {"topic": trend_request.topic, "score": 42}
 
 @app.get("/google-search")
@@ -136,20 +143,26 @@ async def google_search(q: str = Query(..., description="Search query")):
 async def chat(request: Request, body: dict = Body(...)):
     if request.headers.get("Authorization") != f"Bearer {API_KEY}":
         raise HTTPException(status_code=401, detail="Unauthorized")
+    
     prompt = body.get("prompt")
     if not prompt:
         raise HTTPException(status_code=400, detail="Prompt required")
 
     async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            OLLAMA_URL,
-            json={"model": "llama2", "prompt": prompt, "stream": False},
-            timeout=15.0,
-        )
-    if resp.status_code != 200:
-        raise HTTPException(status_code=resp.status_code, detail="Ollama API error")
-    return resp.json()
+        try:
+            resp = await client.post(
+                OLLAMA_URL,
+                json={
+                    "model": "llama2",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False
+                },
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=503, detail=f"Ollama service unavailable: {e}")
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(status_code=e.response.status_code, detail=f"Ollama API error: {e.response.text}")
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
+    return resp.json()
