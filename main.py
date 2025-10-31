@@ -1,15 +1,18 @@
+from fastapi import FastAPI, Request, HTTPException, Body, Query
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.interval import IntervalTrigger
+from cachetools import TTLCache
+from pytrends.request import TrendReq
 from dotenv import load_dotenv
 import os
 import logging
-from fastapi import FastAPI, Request, HTTPException, Body, Query
-from fastapi.middleware.cors import CORSMiddleware
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.interval import IntervalTrigger
-from pytrends.request import TrendReq
-from cachetools import TTLCache
 import httpx
-from pydantic import BaseModel
-from supabase import create_client, Client
+
+# Import Supabase client and affiliate helper
+from utils.supabase_client import supabase
+from utils.affiliate_links import get_affiliate_link
 
 # Load environment variables
 load_dotenv()
@@ -29,7 +32,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Cache
+# Cache for trends
 cache = TTLCache(maxsize=1, ttl=86400)
 CACHE_KEY = "trends_data"
 
@@ -37,16 +40,13 @@ CACHE_KEY = "trends_data"
 API_KEY = os.getenv("API_KEY")
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://127.0.0.1:52683")
 OLLAMA_URL = f"{OLLAMA_HOST}/v1/chat"
-
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 CUSTOM_SEARCH_ENGINE_ID = os.getenv("CUSTOM_SEARCH_ENGINE_ID")
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 # Validate required env variables
 required_env = {
-    "SUPABASE_URL": SUPABASE_URL,
-    "SUPABASE_KEY": SUPABASE_KEY,
+    "SUPABASE_URL": os.getenv("SUPABASE_URL"),
+    "SUPABASE_KEY": os.getenv("SUPABASE_KEY"),
     "GOOGLE_API_KEY": GOOGLE_API_KEY,
     "CUSTOM_SEARCH_ENGINE_ID": CUSTOM_SEARCH_ENGINE_ID,
     "API_KEY": API_KEY,
@@ -55,17 +55,15 @@ missing = [k for k, v in required_env.items() if not v]
 if missing:
     raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
 
-# Supabase client
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# Scheduler
+# Scheduler setup
 scheduler = BackgroundScheduler()
 
 def fetch_trends():
+    """Fetch Google Trends data and store in Supabase & cache."""
     logging.info("Starting fetch_trends job...")
     try:
         pytrends = TrendReq(hl="en-US", tz=360)
-        keywords = ["python"]
+        keywords = ["python"]  # Replace with dynamic topics if needed
         pytrends.build_payload(kw_list=keywords, timeframe="now 7-d", geo="US")
         df = pytrends.interest_over_time()
 
@@ -77,6 +75,7 @@ def fetch_trends():
         cache[CACHE_KEY] = data
         logging.info("Trends data cached successfully.")
 
+        # Insert trends into Supabase
         for record in data:
             supabase.table("trends").insert({
                 "keyword": "python",
@@ -88,13 +87,15 @@ def fetch_trends():
     except Exception as e:
         logging.error(f"Error in fetch_trends: {e}")
 
-# Schedule every 3 hours
+# Schedule trend fetching every 3 hours
 scheduler.add_job(fetch_trends, IntervalTrigger(hours=3))
 scheduler.start()
 
+# Pydantic model for trend scoring
 class TrendRequest(BaseModel):
     topic: str
 
+# --- Routes ---
 @app.get("/")
 def home():
     return {"message": "API running successfully"}
@@ -121,6 +122,7 @@ def refresh_trends():
 async def score_trend(request: Request, trend_request: TrendRequest):
     if request.headers.get("Authorization") != f"Bearer {API_KEY}":
         raise HTTPException(status_code=401, detail="Unauthorized")
+    # Placeholder score logic
     return {"topic": trend_request.topic, "score": 42}
 
 @app.get("/google-search")
@@ -162,3 +164,11 @@ async def chat(request: Request, body: dict = Body(...)):
             raise HTTPException(status_code=e.response.status_code, detail=f"Ollama API error: {e.response.text}")
 
     return resp.json()
+
+@app.post("/generate-link")
+async def generate_link(request: Request):
+    data = await request.json()
+    link_id = data.get("link_id")
+    default_url = "https://your-default-affiliate.com"
+    redirect_url = get_affiliate_link(link_id, default_url)
+    return {"redirectUrl": redirect_url}
