@@ -64,7 +64,7 @@ def fetch_trends():
     logging.info("Starting fetch_trends job...")
     try:
         pytrends = TrendReq(hl="en-US", tz=360)
-        keywords = ["python"]  # Replace with dynamic topics if needed
+        keywords = ["python", "fastapi", "AI", "trending"]  # Add more topics dynamically if needed
         pytrends.build_payload(kw_list=keywords, timeframe="now 7-d", geo="US")
         df = pytrends.interest_over_time()
 
@@ -78,11 +78,12 @@ def fetch_trends():
 
         # Insert trends into Supabase
         for record in data:
-            supabase.table("trends").insert({
-                "keyword": "python",
-                "interest": record.get("python", 0),
-                "fetched_at": record.get("date")
-            }).execute()
+            for keyword in keywords:
+                supabase.table("trends").insert({
+                    "keyword": keyword,
+                    "interest": record.get(keyword, 0),
+                    "fetched_at": record.get("date")
+                }).execute()
         logging.info("Trends inserted into Supabase successfully.")
 
     except Exception as e:
@@ -123,8 +124,9 @@ def refresh_trends():
 async def score_trend(request: Request, trend_request: TrendRequest):
     if request.headers.get("Authorization") != f"Bearer {API_KEY}":
         raise HTTPException(status_code=401, detail="Unauthorized")
-    # Placeholder score logic
-    return {"topic": trend_request.topic, "score": 42}
+    # Placeholder scoring logic (replace with AI or algorithmic scoring)
+    score = len(trend_request.topic) % 100  # simple example
+    return {"topic": trend_request.topic, "score": score}
 
 @app.get("/google-search")
 async def google_search(q: str = Query(..., description="Search query")):
@@ -166,29 +168,26 @@ async def chat(request: Request, body: dict = Body(...)):
 
     return resp.json()
 
-# --- Updated /generate-link endpoint with UTM & click logging ---
+# --- Affiliate link generation with UTM ---
 @app.post("/generate-link")
 async def generate_link(request: Request):
     data = await request.json()
 
     link_id = data.get("link_id")
-    source = data.get("source", "autoloop")      # default UTM source
-    medium = data.get("medium", "affiliate")    # default UTM medium
-    campaign = data.get("campaign", "default")  # default campaign
+    source = data.get("source", "autoloop")      
+    medium = data.get("medium", "affiliate")    
+    campaign = data.get("campaign", "default")  
     default_url = "https://your-default-affiliate.com"
 
-    # Fetch the affiliate link from Supabase
     redirect_url = get_affiliate_link(link_id, default_url)
     if not redirect_url:
         raise HTTPException(status_code=404, detail="Affiliate link not found")
 
-    # Inject UTM parameters
     if "?" in redirect_url:
         utm_link = f"{redirect_url}&utm_source={source}&utm_medium={medium}&utm_campaign={campaign}"
     else:
         utm_link = f"{redirect_url}?utm_source={source}&utm_medium={medium}&utm_campaign={campaign}"
 
-    # Log the click in Supabase
     try:
         supabase.table("affiliate_clicks").insert({
             "link_id": link_id,
