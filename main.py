@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 import os
 import logging
 import httpx
+from datetime import datetime
 
 # Import Supabase client and affiliate helper
 from utils.supabase_client import supabase
@@ -165,10 +166,38 @@ async def chat(request: Request, body: dict = Body(...)):
 
     return resp.json()
 
+# --- Updated /generate-link endpoint with UTM & click logging ---
 @app.post("/generate-link")
 async def generate_link(request: Request):
     data = await request.json()
+
     link_id = data.get("link_id")
+    source = data.get("source", "autoloop")      # default UTM source
+    medium = data.get("medium", "affiliate")    # default UTM medium
+    campaign = data.get("campaign", "default")  # default campaign
     default_url = "https://your-default-affiliate.com"
+
+    # Fetch the affiliate link from Supabase
     redirect_url = get_affiliate_link(link_id, default_url)
-    return {"redirectUrl": redirect_url}
+    if not redirect_url:
+        raise HTTPException(status_code=404, detail="Affiliate link not found")
+
+    # Inject UTM parameters
+    if "?" in redirect_url:
+        utm_link = f"{redirect_url}&utm_source={source}&utm_medium={medium}&utm_campaign={campaign}"
+    else:
+        utm_link = f"{redirect_url}?utm_source={source}&utm_medium={medium}&utm_campaign={campaign}"
+
+    # Log the click in Supabase
+    try:
+        supabase.table("affiliate_clicks").insert({
+            "link_id": link_id,
+            "clicked_at": datetime.utcnow().isoformat(),
+            "utm_source": source,
+            "utm_medium": medium,
+            "utm_campaign": campaign
+        }).execute()
+    except Exception as e:
+        logging.error(f"Error logging click: {e}")
+
+    return {"redirectUrl": utm_link}
